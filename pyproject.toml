@@ -24,7 +24,7 @@ makefun = "^1.9.5"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.2"
-coverage = {extras = ["toml"], version = "^5.4"}
+coverage = {extras = ["toml"], version = "^6.2"}
 safety = "^1.10.3"
 mypy = "^0.800"
 typeguard = "^2.10.0"
