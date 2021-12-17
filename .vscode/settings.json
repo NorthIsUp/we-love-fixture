@@ -1,7 +1,0 @@
-{
-    "python.pythonPath": "/usr/local/Cellar/python/3.7.2/Frameworks/Python.framework/Versions/3.7/bin/python3.7",
-    "python.testing.pytestArgs": [],
-    "python.testing.unittestEnabled": false,
-    "python.testing.nosetestsEnabled": false,
-    "python.testing.pytestEnabled": true
-}

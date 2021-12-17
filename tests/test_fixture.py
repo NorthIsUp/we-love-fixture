@@ -2,7 +2,7 @@ from inspect import signature
 from typing import List, Optional
 
 import pytest
-from welovefixture import fixture
+from we_love_fixture import fixture
 
 
 # test a normal fixture

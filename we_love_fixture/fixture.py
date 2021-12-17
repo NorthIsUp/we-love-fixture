@@ -1,38 +1,61 @@
 # External Libraries
 from __future__ import annotations
+
 import inspect
 from dataclasses import dataclass, field
-from functools import partial, wraps
-from inspect import Parameter, Signature, _empty, _ParameterKind, cleandoc, signature
-from itertools import chain
-from textwrap import wrap
-from types import FunctionType, MethodType
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Type, TypeVar, Union, cast, get_type_hints
+from functools import wraps
+from inspect import Parameter, Signature, _empty, _ParameterKind, signature
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Generator,
+    Iterable,
+    Optional,
+    Sequence,
+    TypeVar,
+    Union,
+    cast,
+)
 
 import pytest
 from _pytest.compat import cached_property
-from _pytest.fixtures import Config, SubRequest, _FixtureFunction
-
-from welovefixture.makefun import create_function
-from welovefixture.util import make_class_agnostic, deep_make_class_agnostic, make_class_agnostic2
+from _pytest.fixtures import Config, SubRequest
+from makefun import create_function
 
 T = TypeVar("T")
 FixtureFuncT = Callable[..., T]
 MarkerFuncT = Callable[..., T]
 TestFuncT = Callable[..., None]
 
+
+# The value of the fixture -- return/yield of the fixture function (type variable).
+_FixtureValue = TypeVar("_FixtureValue")
+
+# The type of the fixture function (type variable).
+_FixtureFunctionT = Callable[..., object]
+
+# The type of the fixture function (bound variable).
+_FixtureFunctionB = TypeVar("_FixtureFunctionB", bound=_FixtureFunctionT)
+
+# The type of a fixture function (type alias generic in fixture value).
+_FixtureFunc = Union[Callable[..., _FixtureValue], Callable[..., Generator[_FixtureValue, None, None]]]
+
 if TYPE_CHECKING:
     from _pytest.fixtures import _Scope
 
+    FuncT = TypeVar("FuncT", bound=Callable[..., Any])
 
-def _requires_fixture_function(func):
+
+def _requires_fixture_function(func: FuncT) -> FuncT:
     @wraps(func)
     def wrapper(self, *args, **kwargs):
         if self.fixture_function is None:
             raise ValueError(f"'fixture_function' must be set before calling '{func.__name__}'")
         return func(self, *args, **kwargs)
 
-    return wrapper
+    return cast(FuncT, wrapper)
 
 
 def _validate_parameter(p: Parameter, arg: object) -> bool:
@@ -47,7 +70,7 @@ def _validate_input(func_sig: Union[Signature, Callable[..., object]], *args, **
     if callable(func_sig):
         sig = signature(func_sig)
     else:
-        sig = cast(Signature, func_sig)
+        sig = func_sig
 
     params = list(sig.parameters.values())
 
@@ -59,7 +82,7 @@ def _validate_input(func_sig: Union[Signature, Callable[..., object]], *args, **
         _validate_parameter(p, kwargs[p.name])
 
 
-def _make_class_agnostic(func):
+def _make_class_agnostic(func: FuncT) -> FuncT:
     sig = signature(func)
     if sig.parameters.get("self"):
 
@@ -67,11 +90,11 @@ def _make_class_agnostic(func):
         def wrapper(self, *args, **kwargs):
             return func(*args, **kwargs)
 
-        return wrapper
+        return cast(FuncT, wrapper)
     return func
 
 
-def _insert_param(sig: Signature, param: Parameter, index=0):
+def _insert_param(sig: Signature, param: Parameter, index=0) -> Signature:
     params = list(sig.parameters.values())
     params.insert(index, param)
     return sig.replace(parameters=params)
@@ -105,7 +128,7 @@ class WeLoveFixture:
     def user(
         posts,  # posts is a fixture
         email: Optional[str]=None  # email is a marker
-        ) -> User:
+    ) -> User:
         return UserFactory(posts=posts, email=email)
 
     @user.mark(email='hi@example.com')
@@ -114,7 +137,7 @@ class WeLoveFixture:
     """
 
     # match the pytest fixture types
-    fixture_function: Optional[_FixtureFunction] = None
+    fixture_function: Optional[_FixtureFunctionT] = None
     scope: "Union[_Scope, Callable[[str, Config], _Scope]]" = "function"
     params: Optional[Iterable[object]] = None
     autouse: bool = False
@@ -128,10 +151,11 @@ class WeLoveFixture:
     args: Sequence[object] = field(default_factory=tuple)
     kwargs: Dict[str, object] = field(default_factory=dict)
 
-    _fixture: Optional[_FixtureFunction] = None
+    _fixture: Optional[_FixtureFunctionT] = None
 
     @classmethod
-    def fixture(cls, *args, **kwargs) -> Union[_FixtureFunction, Callable[[_FixtureFunction], _FixtureFunction]]:
+    def fixture(cls, *args: Any, **kwargs: Any) -> Union[_FixtureFunctionT, _FixtureFunctionB]:
+        # todo, generics?
         if len(args) == 1 and not kwargs and callable(args[0]):
             # if the function is called as a decorator
             return cls(args[0]).pytest_fixture()
@@ -139,24 +163,30 @@ class WeLoveFixture:
             # if the function is called as a autoparam
 
             calling_frame = inspect.stack()[1]
+            assert calling_frame, "no frames?"
             calling_module = inspect.getmodule(calling_frame[0])
+            assert calling_module, "no module?"
 
             try:
                 # this is the most hack i have ever hacked, this is terrible but should work for what we need
                 # example:
                 #   calling_frame.code_context ==  ['c = fixture(test_1=1, test_2=2, autoparam=True)\n']
-                fixture_name = calling_frame.code_context[0].split("=")[0].strip()
+                calling_context = calling_frame.code_context
+                if calling_context:
+                    fixture_name = calling_frame.code_context[0].split("=")
+                else:
+                    fixture_name = "gen-fixture"
             except Exception:
                 fixture_name = "gen-fixture"
 
             @_make_class_agnostic
-            def func(request):
+            def _func(request: SubRequest) -> Any:
                 return request.param
 
             # todo we need to skip the current class
             func = create_function(
-                signature(func),
-                func,
+                signature(_func),
+                _func,
                 func_name=fixture_name,
                 module_name=calling_module.__name__,
             )
@@ -166,7 +196,7 @@ class WeLoveFixture:
             return cls(*args, **kwargs).wrapper
 
     @classmethod
-    def autoparam(cls, *args, **kwargs) -> Union[_FixtureFunction, Callable[[_FixtureFunction], _FixtureFunction]]:
+    def autoparam(cls, *args: Any, **kwargs: Any) -> Union[_FixtureFunction, Callable[[_FixtureFunction], _FixtureFunction]]:
         kwargs["autoparam"] = True
         return cls.fixture(*args, **kwargs)
 
@@ -212,7 +242,7 @@ class WeLoveFixture:
 
         fixture_function = self.fixture_function
 
-        def _the_thing(*args, **kwargs):
+        def _the_thing(*args: Any, **kwargs: Any) -> Any:
             # raise error if we have a signature mismatch
             _validate_input(call_sig, *args, **kwargs)
 
@@ -220,6 +250,7 @@ class WeLoveFixture:
             args_n_kwargs = [*args, *kwargs.values()]
 
             # pluck the request out
+            assert call_request_index is not None
             request = args_n_kwargs[call_request_index]
             mark_kwargs = getattr(request.node.get_closest_marker(self.name), "kwargs", {})
 
@@ -235,13 +266,13 @@ class WeLoveFixture:
         if fixture_self_index is None:
             if fixture_request_index is None:
                 # no self, needs request
-                def _call(request, *args, **kwargs):
+                def _call(request: SubRequest, *args: Any, **kwargs: Any) -> Any:
                     # print("no self, needs request", args, kwargs)
                     return _the_thing(request, *args, **kwargs)
 
             else:
                 # no self, has request
-                def _call(*args, **kwargs):
+                def _call(*args: Any, **kwargs: Any) -> Any:
                     # print("no self, has request", args, kwargs)
                     return _the_thing(*args, **kwargs)
 
@@ -249,13 +280,13 @@ class WeLoveFixture:
             # has self
             if fixture_request_index is None:
                 # has self, needs request
-                def _call(self, request, *args, **kwargs):
+                def _call(self, request: SubRequest, *args: Any, **kwargs: Any) -> Any:
                     # print("has self, needs request", args, kwargs)
                     return _the_thing(self, request, *args, **kwargs)
 
             else:
                 # has self, has request
-                def _call(self, *args, **kwargs):
+                def _call(self, *args: Any, **kwargs: Any) -> Any:
                     # print("has self, has request", args, kwargs)
                     return _the_thing(self, *args, **kwargs)
 
@@ -265,17 +296,17 @@ class WeLoveFixture:
         call_sig = _insert_request_param(signature(call))
         call_self_index = _param_index(call_sig, "self")
         call_request_index = _param_index(call_sig, "request")
-        assert call_request_index is not None
 
         call = create_function(call_sig, _call, func_name=self.name)
+        call.mark = self.mark()
 
         return call
 
-    def wrapper(self, fixture_function: _FixtureFunction) -> _FixtureFunction:
+    def wrapper(self, fixture_function: _FixtureFunctionT) -> _FixtureFunctionT:
         self.fixture_function = fixture_function
         return self.pytest_fixture()
 
-    def pytest_fixture(self, *args, **kwargs) -> _FixtureFunction:
+    def pytest_fixture(self, *args: Any, **kwargs: Any) -> _FixtureFunctionT:
         if self._fixture:
             return self._fixture
 
@@ -299,62 +330,9 @@ class WeLoveFixture:
         if args:
             fixture_kwargs.setdefault("params", []).extend(args)
 
-        call = self.call()
-        call.mark = self.mark()
-        self._fixture = pytest.fixture(**fixture_kwargs)(call)
+        self._fixture = pytest.fixture(**fixture_kwargs)(self.call())
 
         return self._fixture
 
 
 fixture = WeLoveFixture.fixture
-
-
-# def fixture(*args, **kwargs):
-#     """
-#     Same args and kwargs as pytest.fixture with the following additions.
-#     Args:
-#         autoparam (bool): Instead of operating as a decorator just automatically create a fixture that returns `request.param`
-#         **kwargs: kwargs is automatically converted to id, param pairs for the purpose of parametrized tests.
-#     Returns: a pytest.fixture function or method.
-#     """
-
-#     def decorator_factory(func):
-#         fixture_kwargs = {}
-#         if "scope" in kwargs:
-#             fixture_kwargs["scope"] = kwargs.pop("scope")
-
-#         if "autouse" in kwargs:
-#             fixture_kwargs["autouse"] = kwargs.pop("autouse")
-
-#         if "params" in kwargs:
-#             fixture_kwargs["params"] = list(kwargs.pop("params"))
-
-#         if "ids" in kwargs:
-#             fixture_kwargs["ids"] = list(kwargs.pop("ids"))
-
-#         if kwargs:
-#             fixture_kwargs.setdefault("params", []).extend(kwargs.values())
-#             fixture_kwargs.setdefault("ids", []).extend(kwargs.keys())
-
-#         if args:
-#             fixture_kwargs.setdefault("params", []).extend(args)
-
-#         return pytest.fixture(**fixture_kwargs)(func)
-
-#     if len(args) == 1 and not kwargs and callable(args[0]):
-#         # if the function is called as a decorator
-#         function_to_wrap = args[0]
-#         args = ()
-#     elif kwargs.pop("autoparam", False):
-#         # if the function is called as a autoparam
-#         @make_class_agnostic
-#         def function_to_wrap(request):
-#             return request.param
-
-#     else:
-#         function_to_wrap = None
-
-#     if function_to_wrap:
-#         return decorator_factory(function_to_wrap)
-#     else:
-#         return decorator_factory
