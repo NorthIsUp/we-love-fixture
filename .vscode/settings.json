@@ -1,3 +1,8 @@
 {
-    "python.pythonPath": "/Users/adam/Library/Caches/pypoetry/virtualenvs/we-love-fixture-krkCa9Vv-py3.7"
+  "python.pythonPath": "/Users/adam/Library/Caches/pypoetry/virtualenvs/we-love-fixture-krkCa9Vv-py3.7",
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true
 }
